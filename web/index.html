@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ASL Detector</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#111;color:#fff;font-family:system-ui,sans-serif}
+  .box{position:relative;width:min(92vw,640px);aspect-ratio:4/3;background:#000;border-radius:12px;overflow:hidden}
+  video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  #letter{font-size:72px;font-weight:700;height:84px}
+  button{font-size:16px;padding:10px 32px;border:0;border-radius:8px;background:#2d6cdf;color:#fff;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="box"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
+<div id="letter">-</div>
+<button id="btn">Run</button>
+<script type="module">
+import {HandLandmarker, FilesetResolver, DrawingUtils} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const v = document.getElementById('v'), c = document.getElementById('c'), btn = document.getElementById('btn'), out = document.getElementById('letter');
+const ctx = c.getContext('2d'), draw = new DrawingUtils(ctx);
+let landmarker, model, stream, running = false;
+
+function predict(lm) {
+  const xs = lm.map(p => p.x), ys = lm.map(p => p.y), mx = Math.min(...xs), my = Math.min(...ys);
+  const f = lm.flatMap(p => [p.x - mx, p.y - my]), votes = {};
+  for (const t of model.trees) {
+    let n = 0;
+    while (t.l[n] !== -1) n = f[t.f[n]] <= t.t[n] ? t.l[n] : t.r[n];
+    votes[t.c[n]] = (votes[t.c[n]] || 0) + 1;
+  }
+  return model.letters[+Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0]];
+}
+
+function loop() {
+  if (!running) return;
+  const res = landmarker.detectForVideo(v, performance.now());
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (res.landmarks.length) {
+    draw.drawConnectors(res.landmarks[0], HandLandmarker.HAND_CONNECTIONS, {color: '#fff', lineWidth: 3});
+    draw.drawLandmarks(res.landmarks[0], {color: '#2d6cdf', radius: 3});
+    out.textContent = predict(res.landmarks[0]);
+  } else out.textContent = '-';
+  requestAnimationFrame(loop);
+}
+
+async function start() {
+  btn.textContent = 'Loading...';
+  if (!landmarker) {
+    const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    landmarker = await HandLandmarker.createFromOptions(fs, {
+      baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"},
+      runningMode: "VIDEO", numHands: 1});
+    model = await (await fetch('model.json')).json();
+  }
+  stream = await navigator.mediaDevices.getUserMedia({video: true});
+  v.srcObject = stream;
+  await v.play();
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  running = true; btn.textContent = 'Stop'; loop();
+}
+
+function stop() {
+  running = false; stream.getTracks().forEach(t => t.stop());
+  v.srcObject = null; ctx.clearRect(0, 0, c.width, c.height); out.textContent = '-'; btn.textContent = 'Run';
+}
+
+btn.onclick = () => running ? stop() : start().catch(e => { btn.textContent = 'Run'; out.textContent = '!'; console.error(e); });
+</script>
+</body>
+</html>
